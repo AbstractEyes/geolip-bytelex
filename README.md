@@ -85,3 +85,6 @@ primitives.
 Part of the AlephLLM / Mini-Beatrix program. AlephLM is the strongest
 current consumer of this structure — but the matrix belongs to the
 bytes, not to any one model.
+
+
+**Technical companion:** [TECHNICAL.md](TECHNICAL.md) — boundary functional, fleet extraction, first verdicts, the distillation interface.
