@@ -22,3 +22,5 @@ __version__ = "0.1.0"
 __all__ = ["GramSchema", "ByteLexicon", "CachedProfiler", "build_lexicon",
            "project_vocab", "read_vocab", "alignment_endpoints",
            "__version__"]
+from .extract import (detect_family, token_byte_table,
+                      write_vocab_jsonl, roundtrip_gate)
