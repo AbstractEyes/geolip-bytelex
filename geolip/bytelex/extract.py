@@ -110,6 +110,11 @@ def detect_family(tokenizer) -> str:
 
 
 def token_byte_table(tokenizer, family: str | None = None) -> list[dict]:
+    """Full matrix.py row contract: {id, hex, text, n_bytes,
+    is_special, continuation}. The continuation flag separates the
+    boundary alphabet from content (out-of-alphabet law): a
+    word-START expansion carries the leading separator byte; a
+    CONTINUATION expansion is pure content."""
     family = family or detect_family(tokenizer)
     u2b = _gpt2_unicode_to_byte()
     sp = _specials(tokenizer)
@@ -120,16 +125,25 @@ def token_byte_table(tokenizer, family: str | None = None) -> list[dict]:
                    or (isinstance(t, str) and t.startswith("<|")
                        and t.endswith("|>")))
         exp = None
+        cont = False
         if not special:
             if family == "gpt2":
                 exp = _expand_gpt2(t, u2b)
             elif family == "wordpiece":
                 exp = _expand_wordpiece(t)
+                cont = t.startswith("##")
             else:
                 exp = _expand_sentencepiece(t)
+                cont = not t.startswith("▁") and not (
+                    len(t) == 6 and t.startswith("<0x"))
+            if family == "gpt2" and exp is not None:
+                cont = not exp[:1].isspace()
             special = exp is None
+        txt = exp.decode("utf-8", errors="replace") if exp else None
         rows.append({"id": tid, "hex": exp.hex() if exp else "",
-                     "is_special": bool(special)})
+                     "text": txt, "n_bytes": len(exp) if exp else 0,
+                     "is_special": bool(special),
+                     "continuation": bool(cont and not special)})
     return rows
 
 
