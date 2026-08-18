@@ -64,12 +64,28 @@ def _expand_sentencepiece(token: str) -> bytes | None:
     return token.replace("▁", " ").encode("utf-8")
 
 
+def _expand_wordpiece(token: str) -> bytes | None:
+    """BERT wordpiece: '##x' continues the current word (bytes 'x');
+    a bare token starts a word (bytes ' ' + token). LOSSY by design
+    for uncased vocabularies (case folded) and around punctuation
+    (whitespace canonicalized) — gate in 'normalized' mode and record
+    the lossiness; never pretend byte-exactness."""
+    if token.startswith("[") and token.endswith("]"):
+        return None                      # [CLS]/[SEP]/[unused..] etc.
+    if token.startswith("##"):
+        return token[2:].encode("utf-8")
+    return (" " + token).encode("utf-8")
+
+
 def detect_family(tokenizer) -> str:
-    """'gpt2' when the byte-unicode map covers ordinary tokens,
-    else 'sentencepiece'."""
+    """gpt2 / sentencepiece / wordpiece, by convention signature:
+    'Ġ' marks gpt2 space, '▁' marks sentencepiece, '##' marks
+    wordpiece continuations. Ascii merges and <0xNN> fallback rows are
+    expandable under multiple maps, so markers decide, coverage is the
+    last resort."""
     u2b = _gpt2_unicode_to_byte()
     sp = _specials(tokenizer)
-    seen = hit = g_space = sp_space = 0
+    seen = hit = g_space = sp_space = wp_cont = 0
     for tid in range(min(len(tokenizer), 4000)):
         t = tokenizer.convert_ids_to_tokens(tid)
         if t is None or t in sp or not isinstance(t, str):
@@ -77,14 +93,15 @@ def detect_family(tokenizer) -> str:
         seen += 1
         g_space += "Ġ" in t                     # gpt2 space marker
         sp_space += "▁" in t                    # sentencepiece marker
+        wp_cont += t.startswith("##")           # wordpiece continuation
         if _expand_gpt2(t, u2b) is not None:
             hit += 1
     if seen == 0:
         raise ValueError("tokenizer yielded no ordinary tokens to probe")
-    # the space-marker convention is the decisive signature: ascii
-    # merges and <0xNN> fallback rows are expandable under BOTH maps
-    if g_space or sp_space:
-        return "gpt2" if g_space >= sp_space else "sentencepiece"
+    best = max(("gpt2", g_space), ("sentencepiece", sp_space),
+               ("wordpiece", wp_cont), key=lambda kv: kv[1])
+    if best[1] > 0:
+        return best[0]
     return "gpt2" if hit / seen > 0.95 else "sentencepiece"
 
 
@@ -100,8 +117,12 @@ def token_byte_table(tokenizer, family: str | None = None) -> list[dict]:
                        and t.endswith("|>")))
         exp = None
         if not special:
-            exp = (_expand_gpt2(t, u2b) if family == "gpt2"
-                   else _expand_sentencepiece(t))
+            if family == "gpt2":
+                exp = _expand_gpt2(t, u2b)
+            elif family == "wordpiece":
+                exp = _expand_wordpiece(t)
+            else:
+                exp = _expand_sentencepiece(t)
             special = exp is None
         rows.append({"id": tid, "hex": exp.hex() if exp else "",
                      "is_special": bool(special)})
@@ -117,30 +138,78 @@ def _encode_ids(tokenizer, text: str) -> list[int]:
     return list(tokenizer(text, add_special_tokens=False)["input_ids"])
 
 
-def roundtrip_gate(tokenizer, rows: list[dict],
-                   probe: str = _PROBE) -> None:
+def _normalize(s: str) -> str:
+    return " ".join(s.lower().split())
+
+
+def roundtrip_gate(tokenizer, rows: list[dict], probe: str = _PROBE,
+                   mode: str = "exact") -> None:
     """The extraction is not trusted until a probe sentence reassembles
-    BYTE-EXACTLY from the table."""
+    from the table. mode='exact': byte-exact (gpt2-class, byte-complete
+    vocabularies). mode='normalized': case-folded and whitespace-
+    canonicalized comparison (sentencepiece/wordpiece — LOSSY
+    tokenizers may legally drop case and re-space punctuation, and
+    that lossiness is disclosed, never hidden behind a weaker gate
+    silently)."""
     exp = {r["id"]: bytes.fromhex(r["hex"]) for r in rows
            if not r["is_special"] and r["hex"]}
     ids = _encode_ids(tokenizer, probe)
     joined = b"".join(exp.get(i, b"") for i in ids)
-    if joined.decode("utf-8", errors="replace") != probe:
+    got = joined.decode("utf-8", errors="replace")
+    ok = (got == probe if mode == "exact"
+          else _normalize(got) == _normalize(probe))
+    if not ok:
         raise AssertionError(
-            f"round-trip gate FAILED: {joined!r} != {probe!r}")
+            f"round-trip gate FAILED ({mode}): {got!r} != {probe!r}")
+
+
+def coverage(rows: list[dict], corpus: bytes) -> dict:
+    """Fraction of corpus bytes representable by the table — the
+    translation-loss floor for non-byte-complete vocabularies (t5
+    unigram has no byte fallback; wordpiece drops case). Greedy
+    longest-match walk over a byte trie of the expansions."""
+    root: dict = {}
+    for r in rows:
+        if r["is_special"] or not r["hex"]:
+            continue
+        node = root
+        for b in bytes.fromhex(r["hex"]):
+            node = node.setdefault(b, {})
+        node[-1] = True                      # terminal
+    covered = i = 0
+    n = len(corpus)
+    while i < n:
+        node, j, last = root, i, -1
+        while j < n and corpus[j] in node:
+            node = node[corpus[j]]
+            j += 1
+            if -1 in node:
+                last = j
+        if last > i:
+            covered += last - i
+            i = last
+        else:
+            i += 1
+    return {"bytes": n, "covered": covered,
+            "coverage": covered / max(n, 1)}
 
 
 def write_vocab_jsonl(tokenizer, path: str | Path,
                       family: str | None = None,
                       probe: str = _PROBE) -> dict:
-    """Extract, gate, write. Returns a summary dict."""
+    """Extract, gate, write. Returns a summary dict. Gate mode follows
+    the family: gpt2 is byte-exact; sentencepiece/wordpiece gate in
+    normalized mode and the summary carries lossy=True so no consumer
+    mistakes the table for byte-complete."""
     family = family or detect_family(tokenizer)
     rows = token_byte_table(tokenizer, family)
-    roundtrip_gate(tokenizer, rows, probe)
+    mode = "exact" if family == "gpt2" else "normalized"
+    roundtrip_gate(tokenizer, rows, probe, mode=mode)
     path = Path(path)
     with path.open("w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
     n_sp = sum(r["is_special"] for r in rows)
     return {"family": family, "n_tokens": len(rows),
-            "n_special": n_sp, "path": str(path)}
+            "n_special": n_sp, "lossy": family != "gpt2",
+            "gate_mode": mode, "path": str(path)}

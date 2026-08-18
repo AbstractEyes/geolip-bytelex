@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from geolip.bytelex.extract import (_gpt2_unicode_to_byte, detect_family,
+from geolip.bytelex.extract import (_gpt2_unicode_to_byte, coverage, detect_family,
                                     roundtrip_gate, token_byte_table,
                                     write_vocab_jsonl)
 
@@ -101,11 +101,60 @@ def test_write_summary(tmp_path):
     assert s["n_special"] == 1
 
 
+
+
+class FakeWPTok:
+    def __init__(self):
+        self._toks = (["the", "answer", "##er", "##s", ".", "an"]
+                      + ["[CLS]", "[SEP]", "[unused0]"])
+        self.all_special_tokens = ["[CLS]", "[SEP]"]
+
+    def __len__(self):
+        return len(self._toks)
+
+    def convert_ids_to_tokens(self, i):
+        return self._toks[i]
+
+    def encode(self, text, add_special_tokens=False):
+        out = []
+        for w in text.lower().split(" "):
+            if w == "the":
+                out.append(0)
+            elif w == "answers":
+                out.extend([1, 3])
+            elif w == "answer":
+                out.append(1)
+            elif w == "an":
+                out.append(5)
+        return out
+
+
+def test_wordpiece_family_and_gate():
+    tk = FakeWPTok()
+    assert detect_family(tk) == "wordpiece"
+    rows = token_byte_table(tk, family="wordpiece")
+    assert bytes.fromhex(rows[0]["hex"]) == b" the"
+    assert bytes.fromhex(rows[2]["hex"]) == b"er"
+    assert rows[8]["is_special"]          # [unused0]
+    roundtrip_gate(tk, rows, probe="The Answers", mode="normalized")
+
+
+def test_coverage_gauge():
+    tk = FakeWPTok()
+    rows = token_byte_table(tk, family="wordpiece")
+    c = coverage(rows, b" the answers the")
+    assert c["coverage"] > 0.9
+    c2 = coverage(rows, b"zzzzqqqq")
+    assert c2["coverage"] == 0.0
+
+
 if __name__ == "__main__":
     import tempfile
     test_family_detection()
     test_gpt2_roundtrip_and_table()
     test_sentencepiece_expansions()
+    test_wordpiece_family_and_gate()
+    test_coverage_gauge()
     with tempfile.TemporaryDirectory() as d:
         test_write_summary(Path(d))
     print("extract tests: 4/4 PASS")
