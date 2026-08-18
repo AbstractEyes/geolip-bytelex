@@ -23,6 +23,10 @@ import json
 from pathlib import Path
 
 _PROBE = "The answer is 367 — naturally."
+# Lossy families gate on ASCII: representability of exotic bytes is
+# coverage()'s job, the gate only checks reassembly of what the vocab
+# CAN say (t5-unigram has no em dash; that is disclosure, not error).
+_PROBE_ASCII = "The answer is 367, naturally."
 
 
 def _gpt2_unicode_to_byte() -> dict[str, int]:
@@ -86,7 +90,7 @@ def detect_family(tokenizer) -> str:
     u2b = _gpt2_unicode_to_byte()
     sp = _specials(tokenizer)
     seen = hit = g_space = sp_space = wp_cont = 0
-    for tid in range(min(len(tokenizer), 4000)):
+    for tid in range(min(len(tokenizer), 200_000)):
         t = tokenizer.convert_ids_to_tokens(tid)
         if t is None or t in sp or not isinstance(t, str):
             continue
@@ -139,7 +143,11 @@ def _encode_ids(tokenizer, text: str) -> list[int]:
 
 
 def _normalize(s: str) -> str:
-    return " ".join(s.lower().split())
+    """Gate-compare form for lossy families: case folded, ALL
+    whitespace removed. Wordpiece legally re-spaces punctuation
+    ('naturally .' for 'naturally.'), so single-space collapse is
+    still too strict; any CONTENT drop still fails."""
+    return "".join(s.lower().split())
 
 
 def roundtrip_gate(tokenizer, rows: list[dict], probe: str = _PROBE,
@@ -204,6 +212,8 @@ def write_vocab_jsonl(tokenizer, path: str | Path,
     family = family or detect_family(tokenizer)
     rows = token_byte_table(tokenizer, family)
     mode = "exact" if family == "gpt2" else "normalized"
+    if mode == "normalized" and probe == _PROBE:
+        probe = _PROBE_ASCII
     roundtrip_gate(tokenizer, rows, probe, mode=mode)
     path = Path(path)
     with path.open("w", encoding="utf-8") as f:
