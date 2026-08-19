@@ -130,6 +130,23 @@ def alloy_frame(z: torch.Tensor, target: torch.Tensor,
     return {"loss_id": lid, "loss_mse": lmse}
 
 
+# ------------------------------------------------------ alloy_infonce
+def alloy_infonce(z: torch.Tensor, sid: torch.Tensor,
+                  teacher_table: torch.Tensor,
+                  s: torch.Tensor) -> torch.Tensor:
+    """Teacher-geometry InfoNCE: identify the site's STATE within the
+    TEACHER's per-state frame table (999 unit rows = teacher state
+    means). A regional alignment demand — closer to your state's
+    teacher vector than to other states' — that preserves spread
+    where pointwise MSE pulls disagreeing teachers to a midpoint
+    (canon: feature-MSE collapses erank; InfoNCE keeps it). Negatives
+    are STATES of the inventory, never batch items — the byte-state
+    arbitration holds. Returns per-site loss."""
+    zn = F.normalize(z, dim=-1)
+    lg = s * (zn @ F.normalize(teacher_table, dim=-1).T)
+    return F.cross_entropy(lg, sid, reduction="none")
+
+
 # --------------------------------------------------------- alloy_loss
 def alloy_loss(z: torch.Tensor, sid: torch.Tensor,
                E_rows: torch.Tensor, s: torch.Tensor,
