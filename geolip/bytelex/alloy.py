@@ -130,6 +130,30 @@ def alloy_frame(z: torch.Tensor, target: torch.Tensor,
     return {"loss_id": lid, "loss_mse": lmse}
 
 
+# --------------------------------------------------------- alloy_loss
+def alloy_loss(z: torch.Tensor, sid: torch.Tensor,
+               E_rows: torch.Tensor, s: torch.Tensor,
+               teacher_targets: dict[str, torch.Tensor],
+               b: torch.Tensor | None = None) -> dict:
+    """THE ALLOY LOSS (named by Phil, 2026-08-18): multiple teachers
+    fused into one student arm through the byte-state frame, each
+    component separately assayed. Base metal = identification against
+    the codebook (the student's own identity, preserved); each
+    teacher contributes a unit-sphere frame regression as an alloying
+    element. Returns {"loss_id": ..., "mse_<teacher>": ...} per site
+    — components are combined by the CALLER and logged through
+    AlloyLedger; this function never fuses them."""
+    zn = F.normalize(z, dim=-1)
+    lg = s * (zn @ F.normalize(E_rows, dim=-1).T)
+    if b is not None:
+        lg = lg + b
+    out = {"loss_id": F.cross_entropy(lg, sid, reduction="none")}
+    for name, tgt in teacher_targets.items():
+        out[f"mse_{name}"] = ((zn - F.normalize(tgt, dim=-1)) ** 2
+                              ).sum(-1)
+    return out
+
+
 # -------------------------------------------------------- attribution
 class AlloyLedger:
     """Per-component, per-class accumulation. The module's contract:
