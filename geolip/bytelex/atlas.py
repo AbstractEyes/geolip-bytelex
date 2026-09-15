@@ -60,7 +60,7 @@ def load_vocab_words(path: str | Path):
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             r = json.loads(line)
-            t = r.get("text", "").lstrip(" Ġ▁").strip().lower()
+            t = (r.get("text") or "").lstrip(" Ġ▁").strip().lower()
             if t.isalpha():
                 words.add(t)
     return words
