@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "geolip-bytelex"
-version = "0.1.0"
+version = "0.2.0"
 description = "bytelex — universal, model-free relational system over byte information: alphabet-parametric gram statistics, corpus-entropy boundaries, and full-vocabulary token translation matrices for ByteLM distillation."
 readme = "README.md"
 requires-python = ">=3.10"

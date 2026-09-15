@@ -50,13 +50,14 @@ from geolip.bytelex.hub import load_lexicon, matrix_path
 lex = load_lexicon()                         # byte_lexicon_v1
 ```
 
-## The three objects
+## The four objects
 
 | object | role |
 |---|---|
 | `GramSchema` | declares alphabet size, gram views, separator predicate — serializable config |
 | `ByteLexicon` | corpus statistics: gram counts, successor branching entropy (the boundary functional), adjacent PMI (cohesion); persistable |
 | the matrix | every token of a vocabulary → `{hmax, hargmax, pmin, word}` — internal division point, cohesion, word standing |
+| the atlas (`atlas.py`) | a deterministic trigram coordinate space (every 3-byte sequence is one cell; byte strings are paths) carrying weight fields built from token numerics alone — no corpus. Per-cell caveats (continuation entropy, dominant-successor share, closability), coverage set-ops between fields, alignment spectra, and a word minter with novelty / trap-band / distinctness screens. Dead cells never enter the structures; queries on them return 0 by default. The fleet-consensus caveat reproduced a trained byte model's per-word accuracy ladder at Spearman −0.976 (ledger: `btx_e003/atlas_proto_ledger.json` in the artifacts repo) |
 
 ## Distillation loss primitives
 
