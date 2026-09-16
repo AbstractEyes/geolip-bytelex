@@ -158,6 +158,77 @@ class WeightField:
     def word_end_caveat(self, word: bytes):
         return self.caveat(cell_index(word[-3], word[-2], word[-1]))
 
+    def mint_lexicon_program(self, *, n_easy=0, n_trap=0, pair_prefixes=(), seed=0,
+                             length_range=(4, 6), easy_band=(0.0, 0.42), trap_band=(0.55, 1.0),
+                             known_words: set | None = None, avoid: set | None = None,
+                             cross_cap: int = 1, oversample: int = 4):
+        """Mint a GRADED lexicon program: an easy-close band, a trap band, and optional
+        shared-prefix pairs — difficulty as a measured dial rather than an accident.
+
+        Bands select on the word-end dominant-continuation share (`word_end_caveat` top):
+        easy words sit where many continuations stay plausible, trap words where one
+        continuation dominates (the field "refuses to close" them). `pair_prefixes` mints
+        one word pair per prefix (first half of the list in the easy band, second half in
+        the trap band), sharing that onset by design — training material for commitment
+        between look-alike surfaces. Screens: novelty against `known_words` and `avoid`,
+        and pairwise flanked-trigram sharing capped at `cross_cap` across all minted words
+        (within-pair prefixes exempt by construction). Deterministic under `seed`.
+
+        Returns {"easy": [...], "trap": [...], "pairs": [[a, b], ...]}. Raises ValueError
+        when the field cannot fill a band — widen the band, shorten the words, or feed a
+        richer field. Validation on record: trap-band-trained models flatten a measured
+        per-word failure ladder with transfer (huggingface.co/AbstractPhil/geolip-bytelex,
+        btx_e003 artifacts)."""
+        known = known_words or set()
+        avoid = set(a.lower() for a in (avoid or set()))
+        taken: list[set] = []
+        out = {"easy": [], "trap": [], "pairs": []}
+
+        def flanked(w: str):
+            s = " " + w + " "
+            return {s[i:i + 3] for i in range(len(s) - 2)}
+
+        def cross_filter(cands, want):
+            picked = []
+            for w in cands:
+                t = flanked(w)
+                if all(len(t & tt) <= cross_cap for tt in taken):
+                    picked.append(w); taken.append(t)
+                    if len(picked) == want:
+                        break
+            return picked
+
+        for name, n, band in (("easy", n_easy, easy_band), ("trap", n_trap, trap_band)):
+            if not n:
+                continue
+            cands = self.mint_words(n * oversample, seed=seed + (0 if name == "easy" else 1),
+                                    length_range=length_range, top_band=band, known_words=known,
+                                    avoid=avoid | set(out["easy"]))
+            got = cross_filter(cands, n)
+            if len(got) < n:
+                raise ValueError(f"{name} band yielded {len(got)}/{n}; widen the band or the field")
+            out[name] = got
+        for k, pf in enumerate(pair_prefixes):
+            band = easy_band if 2 * k < len(pair_prefixes) else trap_band
+            got = self.mint_words(2 * oversample, seed=seed + 100 + k, length_range=length_range,
+                                  top_band=band, known_words=known,
+                                  avoid=avoid | set(out["easy"]) | set(out["trap"])
+                                  | {w for p in out["pairs"] for w in p},
+                                  max_shared_trigrams=3, prefix=pf)
+            pick = []
+            for w in got:
+                t = flanked(w)
+                if all(len(t & tt) <= cross_cap for tt in taken) and w not in pick:
+                    pick.append(w)
+                    if len(pick) == 2:
+                        break
+            if len(pick) < 2:
+                raise ValueError(f"prefix {pf!r} yielded {len(pick)}/2; widen the band or the field")
+            for w in pick:
+                taken.append(flanked(w))
+            out["pairs"].append(pick)
+        return out
+
     def mint_words(self, n: int, seed: int, length_range=(4, 6), top_band=(0.0, 1.0),
                    known_words: set | None = None, avoid: set | None = None,
                    max_shared_trigrams: int = 1, prefix: bytes | None = None,

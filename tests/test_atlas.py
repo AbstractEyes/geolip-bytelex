@@ -102,3 +102,29 @@ def test_load_vocab_rows_skips_specials(tmp_path):
 def test_cell_roundtrip():
     for b in (b"abc", b"\xe4\xb8\xad", b"\x00\xff\x10"):
         assert cell_bytes(cell_index(*b)) == b
+
+
+def test_mint_lexicon_program_structure_and_determinism():
+    words = [b"stone", b"stole", b"stork", b"blane", b"bloke", b"blimp", b"crane", b"crest",
+             b"crumb", b"plume", b"plank", b"grath", b"snide", b"swill", b"flint", b"flame",
+             b"glide", b"gloam", b"chart", b"chime", b"drape", b"trove", b"bruce", b"brisk"]
+    f = WeightField.from_rows([(i, b" " + w) for i, w in enumerate(words)], "flat")
+    kw = dict(n_easy=3, n_trap=3, pair_prefixes=(b"st", b"bl"), seed=11, length_range=(4, 5),
+              easy_band=(0.0, 1.0), trap_band=(0.0, 1.0), known_words={"stone"}, avoid={"crane"})
+    a = f.mint_lexicon_program(**kw)
+    b = f.mint_lexicon_program(**kw)
+    assert a == b                                           # deterministic under the seed
+    allw = a["easy"] + a["trap"] + [w for p in a["pairs"] for w in p]
+    assert len(a["easy"]) == 3 and len(a["trap"]) == 3 and len(a["pairs"]) == 2
+    assert len(set(allw)) == len(allw)                      # no duplicates across bands
+    assert "stone" not in allw and "crane" not in allw      # novelty + blocklist screens
+    for (x, y), pf in zip(a["pairs"], (b"st", b"bl")):
+        assert x.startswith(pf.decode()) and y.startswith(pf.decode())
+
+    def flanked(w):
+        s = " " + w + " "
+        return {s[i:i + 3] for i in range(len(s) - 2)}
+    solo = a["easy"] + a["trap"]                            # cross-cap holds among non-pair words
+    for i in range(len(solo)):
+        for j in range(i + 1, len(solo)):
+            assert len(flanked(solo[i]) & flanked(solo[j])) <= 1
